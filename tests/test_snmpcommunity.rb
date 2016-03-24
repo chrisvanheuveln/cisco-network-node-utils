@@ -34,19 +34,42 @@ class TestSnmpCommunity < CiscoTestCase
 
   def setup
     super
-    @default_show_command = 'show run snmp all | no-more'
+    if platform != :ios_xr
+      @default_show_command = 'show run snmp all | no-more'
+    else
+      @default_show_command = 'show running-config snmp'
+    end
   end
 
   def test_snmpcommunity_collection_empty
     # This test requires all the snmp communities removed from device
-    s = @device.cmd('show run snmp all | no-more')
-    cmd_prefix = 'snmp-server community'
-    # puts "s : #{s}"
-    pattern = /#{cmd_prefix}\s\S+\sgroup\s\S+/
-    until (md = pattern.match(s)).nil?
-      # puts "md : #{md}"
-      config("no #{md}")
-      s = md.post_match
+    if platform != :ios_xr
+      s = @device.cmd('show run snmp all | no-more')
+      cmd_prefix = 'snmp-server community'
+      # puts "s : #{s}"
+      pattern = /#{cmd_prefix}\s\S+\sgroup\s\S+/
+      until (md = pattern.match(s)).nil?
+        # puts "md : #{md}"
+        config("no #{md}")
+        s = md.post_match
+      end
+    else
+      config('no snmp-server community com1',
+             'no snmp-server community com2',
+             'no snmp-server community com12',
+             'no snmp-server community com22',
+             'no snmp-server community test',
+             'no snmp-server group network-operator v3 noauth',
+             'no snmp-server community-map cisco target-list network-operator',
+             'no snmp-server community-map cisco128lab target-list network-operator', # rubocop:disable Metrics/LineLength
+             'no snmp-server community ciscogroupsetcom',
+             'no snmp-server group network-operator v3 noauth',
+             'no snmp-server community-map ciscogetgrp target-list network-operator', # rubocop:disable Metrics/LineLength
+             'no snmp-server community-map ciscogroupsetcom target-list network-operator', # rubocop:disable Metrics/LineLength
+             'no snmp-server community ciscoaclget IPv4 ciscoacl',
+             'no snmp-server group vdc-admin v3 noauth',
+             'no snmp-server group network-admin v3 noauth',
+             'no snmp-server group network-operator v3 noauth')
     end
     snmpcommunities = SnmpCommunity.communities
     assert_equal(true, snmpcommunities.empty?,
@@ -54,10 +77,19 @@ class TestSnmpCommunity < CiscoTestCase
   end
 
   def test_snmpcommunity_collection_not_empty
-    # This test require some snmp community exist in device
-    config('snmp-server community com1 group network-admin',
-           'snmp-server community com2')
     snmpcommunities = SnmpCommunity.communities
+    cleanup_snmp_communities(snmpcommunities)
+
+    # This test require some snmp community exist in device
+    if platform != :ios_xr
+      config('snmp-server community com1 group network-admin',
+             'snmp-server community com2')
+    else
+      config('snmp-server community com1',
+             'snmp-server community com2')
+    end
+    snmpcommunities = SnmpCommunity.communities
+
     assert_equal(false, snmpcommunities.empty?,
                  'SnmpCommunity collection is empty')
     cleanup_snmp_communities(snmpcommunities)
@@ -65,14 +97,24 @@ class TestSnmpCommunity < CiscoTestCase
 
   def test_snmpcommunity_collection_valid
     # This test require some snmp community exist in device
-    config('snmp-server community com12 group network-operator',
-           'snmp-server community com22 group network-admin')
+    if platform != :ios_xr
+      config('snmp-server community com12 group network-operator',
+             'snmp-server community com22 group network-admin')
+    else
+      config('snmp-server community com12',
+             'snmp-server community com22')
+    end
     # get collection
+
     snmpcommunities = SnmpCommunity.communities
-    s = @device.cmd('show run snmp all | no-more')
+    if platform != :ios_xr
+      s = @device.cmd('show run snmp all | no-more')
+    else
+      s = @device.cmd('show running-config snmp')
+    end
     cmd = 'snmp-server community'
-    snmpcommunities.each do |name, snmpcommunity|
-      line = /#{cmd}\s#{name}\sgroup\s#{snmpcommunity.group}/.match(s)
+    snmpcommunities.each do |name, _snmpcommunity|
+      line = /#{cmd}\s#{name}\s.*/.match(s)
       # puts "line: #{line}"
       assert_equal(false, line.nil?)
     end
@@ -106,7 +148,11 @@ class TestSnmpCommunity < CiscoTestCase
   def test_snmpcommunity_create_name_too_long
     name = 'co' + 'c' * SNMP_COMMUNITY_NAME_STR
     assert_raises(Cisco::CliError) do
-      SnmpCommunity.new(name, 'network-operator')
+      if platform != :ios_xr
+        SnmpCommunity.new(name, 'network-operator')
+      else
+        SnmpCommunity.new(name, '')
+      end
     end
   end
 
@@ -120,6 +166,7 @@ class TestSnmpCommunity < CiscoTestCase
   def test_snmpcommunity_create_group_invalid
     name = 'ciscotest'
     group = 'network-operator-invalid'
+    return if platform != :nexus
     assert_raises(Cisco::CliError) do
       SnmpCommunity.new(name, group)
     end
@@ -129,8 +176,17 @@ class TestSnmpCommunity < CiscoTestCase
     name = 'cisco'
     group = 'network-operator'
     snmpcommunity = SnmpCommunity.new(name, group)
-    assert_show_match(
-      pattern: /snmp-server community\s#{name}\sgroup\s#{group}/)
+    if platform != :ios_xr
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}\sgroup\s#{group}/)
+    else
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}/)
+      assert_show_match(
+        pattern: /snmp-server group\s#{group}/)
+      assert_show_match(
+        pattern: /snmp-server community-map\s#{name}\starget-list\s#{group}/)
+    end
     cleanup_snmpcommunity(snmpcommunity)
   end
 
@@ -138,8 +194,17 @@ class TestSnmpCommunity < CiscoTestCase
     name = 'cisco128lab'
     group = 'network-operator'
     snmpcommunity = SnmpCommunity.new(name, group)
-    assert_show_match(
-      pattern: /snmp-server community\s#{name}\sgroup\s#{group}/)
+    if platform != :ios_xr
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}\sgroup\s#{group}/)
+    else
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}/)
+      assert_show_match(
+        pattern: /snmp-server group\s#{group}/)
+      assert_show_match(
+        pattern: /snmp-server community-map\s#{name}\starget-list\s#{group}/)
+    end
     cleanup_snmpcommunity(snmpcommunity)
   end
 
@@ -162,6 +227,7 @@ class TestSnmpCommunity < CiscoTestCase
   end
 
   def test_snmpcommunity_group_set_too_long
+    return if platform != :nexus
     name = 'ciscogroupsetcom'
     group = 'network-operator'
     snmpcommunity = SnmpCommunity.new(name, group)
@@ -172,6 +238,7 @@ class TestSnmpCommunity < CiscoTestCase
   end
 
   def test_snmpcommunity_group_set_invalid
+    return if platform != :nexus
     name = 'ciscogroupsetcom'
     group = 'network-operator'
     snmpcommunity = SnmpCommunity.new(name, group)
@@ -188,8 +255,18 @@ class TestSnmpCommunity < CiscoTestCase
     # new group
     group = 'network-admin'
     snmpcommunity.group = group
-    assert_show_match(
-      pattern: /snmp-server community\s#{name}\sgroup\s#{group}/)
+    if platform != :ios_xr
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}\sgroup\s#{group}/)
+    else
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}/)
+      assert_show_match(
+        pattern: /snmp-server group\s#{group}/)
+      assert_show_match(
+        pattern: /snmp-server community-map\s#{name}\starget-list\s#{group}/)
+    end
+
     cleanup_snmpcommunity(snmpcommunity)
   end
 
@@ -200,14 +277,32 @@ class TestSnmpCommunity < CiscoTestCase
     # new group identity
     group = 'vdc-admin'
     snmpcommunity.group = group
-    assert_show_match(
-      pattern: /snmp-server community\s#{name}\sgroup\s#{group}/)
+    if platform != :ios_xr
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}\sgroup\s#{group}/)
+    else
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}/)
+      assert_show_match(
+        pattern: /snmp-server group\s#{group}/)
+      assert_show_match(
+        pattern: /snmp-server community-map\s#{name}\starget-list\s#{group}/)
+    end
 
     # Restore group default
     group = SnmpCommunity.default_group
     snmpcommunity.group = group
-    assert_show_match(
-      pattern: /snmp-server community\s#{name}\sgroup\s#{group}/)
+    if platform != :ios_xr
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}\sgroup\s#{group}/)
+    else
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}/)
+      assert_show_match(
+        pattern: /snmp-server group\s#{group}/)
+      assert_show_match(
+        pattern: /snmp-server community-map\s#{name}\starget-list\s#{group}/)
+    end
 
     cleanup_snmpcommunity(snmpcommunity)
   end
@@ -217,8 +312,13 @@ class TestSnmpCommunity < CiscoTestCase
     group = 'network-operator'
     snmpcommunity = SnmpCommunity.new(name, group)
     snmpcommunity.destroy
-    refute_show_match(
-      pattern: /snmp-server community\s#{name}\sgroup\s#{group}/)
+    if platform != :ios_xr
+      refute_show_match(
+        pattern: /snmp-server community\s#{name}\sgroup\s#{group}/)
+    else
+      refute_show_match(
+        pattern: /snmp-server community\s#{name}/)
+    end
   end
 
   def test_snmpcommunity_acl_get_no_acl
@@ -234,10 +334,17 @@ class TestSnmpCommunity < CiscoTestCase
     group = 'network-operator'
     snmpcommunity = SnmpCommunity.new(name, group)
     snmpcommunity.acl = 'ciscoacl'
-    line = assert_show_match(
-      pattern: /snmp-server community\s#{name}\suse-acl\s\S+/)
-    acl = line.to_s.gsub(/snmp-server community\s#{name}\suse-acl\s/, '').strip
-    assert_equal(snmpcommunity.acl, acl)
+    if platform != :ios_xr
+      line = assert_show_match(
+        pattern: /snmp-server community\s#{name}\suse-acl\s\S+/)
+      acl = line.to_s.gsub(/snmp-server community\s#{name}\suse-acl\s/, '').strip # rubocop:disable Metrics/LineLength
+      assert_equal(snmpcommunity.acl, acl)
+    else
+      line = assert_show_match(
+        pattern: /snmp-server community\s#{name}\sIPv4\s\S+/)
+      acl = line.to_s.gsub(/snmp-server community\s#{name}\sIPv4\s/, '').strip
+      assert_equal(snmpcommunity.acl, acl)
+    end
     cleanup_snmpcommunity(snmpcommunity)
   end
 
@@ -257,8 +364,13 @@ class TestSnmpCommunity < CiscoTestCase
     acl = 'ciscoadminacl'
     snmpcommunity = SnmpCommunity.new(name, group)
     snmpcommunity.acl = acl
-    assert_show_match(
-      pattern: /snmp-server community\s#{name}\suse-acl\s#{acl}/)
+    if platform != :ios_xr
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}\suse-acl\s#{acl}/)
+    else
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}\sIPv4\s#{acl}/)
+    end
     cleanup_snmpcommunity(snmpcommunity)
   end
 
@@ -269,12 +381,22 @@ class TestSnmpCommunity < CiscoTestCase
     snmpcommunity = SnmpCommunity.new(name, group)
     # puts "set acl #{acl}"
     snmpcommunity.acl = acl
-    assert_show_match(
-      pattern: /snmp-server community\s#{name}\suse-acl\s#{acl}/)
+    if platform != :ios_xr
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}\suse-acl\s#{acl}/)
+    else
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}\sIPv4\s#{acl}/)
+    end
     # remove acl
     snmpcommunity.acl = ''
-    refute_show_match(
-      pattern: /snmp-server community\s#{name}\suse-acl\s#{acl}/)
+    if platform != :ios_xr
+      refute_show_match(
+        pattern: /snmp-server community\s#{name}\suse-acl\s#{acl}/)
+    else
+      refute_show_match(
+        pattern: /snmp-server community\s#{name}\sIPv4\s#{acl}/)
+    end
     cleanup_snmpcommunity(snmpcommunity)
   end
 
@@ -284,8 +406,13 @@ class TestSnmpCommunity < CiscoTestCase
     acl = 'cisco_test_acl'
     snmpcommunity = SnmpCommunity.new(name, group)
     snmpcommunity.acl = acl
-    assert_show_match(
-      pattern: /snmp-server community\s#{name}\suse-acl\s#{acl}/)
+    if platform != :ios_xr
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}\suse-acl\s#{acl}/)
+    else
+      assert_show_match(
+        pattern: /snmp-server community\s#{name}\sIPv4\s#{acl}/)
+    end
 
     # Check default_acl
     assert_equal(DEFAULT_SNMP_COMMUNITY_ACL,
@@ -295,8 +422,14 @@ class TestSnmpCommunity < CiscoTestCase
     # Set acl to default
     acl = SnmpCommunity.default_acl
     snmpcommunity.acl = acl
-    refute_show_match(
-      pattern: /snmp-server community\s#{name}\suse-acl\s#{acl}/)
+    if platform != :ios_xr
+      refute_show_match(
+        pattern: /snmp-server community\s#{name}\suse-acl\s#{acl}/)
+    else
+      refute_show_match(
+        pattern: /snmp-server community\s#{name}\sIPv4\s#{acl}/)
+    end
+
     cleanup_snmpcommunity(snmpcommunity)
   end
 end
